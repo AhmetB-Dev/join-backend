@@ -121,7 +121,42 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
+    # Only views with an explicit throttle_scope are rate-limited. This keeps
+    # normal authenticated CRUD unchanged while protecting public auth entrypoints.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "auth_login": os.getenv("JOIN_LOGIN_RATE", "10/min"),
+        "auth_register": os.getenv("JOIN_REGISTER_RATE", "5/min"),
+        "auth_guest": os.getenv("JOIN_GUEST_RATE", "5/min"),
+    },
 }
+
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+JOIN_TASK_CACHE_TIMEOUT = int(os.getenv("JOIN_TASK_CACHE_TIMEOUT", "30"))
+
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 300,
+        }
+    }
+else:
+    # Local development/tests remain easy to run without a Redis service.
+    # Production deliberately requires shared Redis so cache/throttle state is
+    # consistent across multiple application workers.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "join-local-development",
+            "TIMEOUT": 300,
+        }
+    }
+    if not DEBUG:
+        raise RuntimeError("REDIS_URL must be set when DJANGO_DEBUG=False.")
 
 if DEBUG:
     # VS Code Live Server / local JOIN frontend.

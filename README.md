@@ -14,6 +14,7 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 - Django
 - Django REST Framework
 - SQLite for local development
+- Redis-backed shared cache/throttle state in production
 - Django REST Framework token authentication
 
 ## Main backend features
@@ -28,6 +29,8 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 - REST API integration with the JOIN frontend
 - Health and database-readiness endpoints
 - Environment-based production configuration
+- User-scoped task-list caching with explicit invalidation
+- Auth endpoint rate limiting with shared cache state
 
 ## Start locally
 
@@ -63,6 +66,18 @@ DJANGO_CORS_ALLOWED_ORIGINS=https://example.com
 DJANGO_SECURE_SSL_REDIRECT=True
 DJANGO_SESSION_COOKIE_SECURE=True
 DJANGO_CSRF_COOKIE_SECURE=True
+REDIS_URL=redis://redis:6379/0
+```
+
+Redis is optional for local development. When `REDIS_URL` is empty, Django uses an in-process LocMem cache so the project and tests remain easy to run. Production deliberately requires Redis because task-cache and auth-throttle state must be shared consistently across application workers.
+
+The current defaults are:
+
+```text
+JOIN_TASK_CACHE_TIMEOUT=30
+JOIN_LOGIN_RATE=10/min
+JOIN_REGISTER_RATE=5/min
+JOIN_GUEST_RATE=5/min
 ```
 
 When Django is behind a trusted reverse proxy that sets `X-Forwarded-Proto`, enable:
@@ -72,6 +87,12 @@ DJANGO_TRUST_PROXY_SSL_HEADER=True
 ```
 
 HSTS remains disabled by default and should only be enabled after HTTPS works reliably in production.
+
+## Cache and abuse protection
+
+The unfiltered `GET /api/tasks/` response is cached per authenticated user because JOIN's summary page polls that endpoint frequently. Cache keys include the user ID, filtered task requests bypass this cache, and the cache is invalidated whenever tasks or contacts are created, updated or deleted. Redis is never the source of truth; the database remains authoritative and the cache also has a short TTL as a fallback.
+
+Public auth entrypoints use DRF scoped throttling. Login, registration and guest login have separate limits. The same Django cache backend stores throttle state, so production workers share the same counters through Redis. Rate limiting is only one abuse-control layer and does not replace authentication, validation or permissions.
 
 ## Data behavior
 
@@ -129,7 +150,7 @@ python manage.py check --deploy
 
 ## Production roadmap
 
-The current repository intentionally keeps SQLite for local development. Before the public deployment, the production database, Docker runtime, reverse proxy/HTTPS setup, shared Redis use cases, and CI/CD pipeline will be configured explicitly for the target VPS instead of being guessed in advance.
+The current repository intentionally keeps SQLite for local development. Redis use is now defined for two concrete shared-state needs: the frequently-read task list cache and DRF auth-throttle counters. Before public deployment, the production database, Docker runtime, Redis container/service, reverse proxy/HTTPS setup and CI/CD pipeline will be configured explicitly for the target VPS.
 
 ## Security and data-isolation checks
 
@@ -147,10 +168,23 @@ The test suite explicitly verifies that:
 - task progress cannot be manipulated by the client and is recalculated from subtasks,
 - contact assignment never reuses another user's contact with the same name.
 
-Auth throttling is intentionally not implemented with a process-local production cache. The public deployment will add rate limits together with the planned shared-cache/Redis setup so limits remain consistent across production workers.
+Auth throttling is implemented with scoped DRF throttles. Local development can use LocMem; production requires `REDIS_URL` so limits remain consistent across workers. Tests also cover the login throttle and user-isolated cache behavior.
 
 ## Phase 3 migration safety
 
 The owner fields used to be nullable for legacy compatibility. Phase 3 makes them database-required. The migrations deliberately **do not delete or guess ownership for legacy rows**. If an older local database still contains owner-less contacts or tasks, `python manage.py migrate` stops with a clear error. Assign those legacy rows to the correct user first, then run the migration again.
 
 This fail-closed migration behavior protects existing data from accidental reassignment or deletion.
+
+## Phase 4 Redis/cache design
+
+Phase 4 intentionally uses Redis for concrete capabilities rather than as a portfolio-only dependency:
+
+- shared per-user cache for the repeatedly requested unfiltered task list,
+- shared DRF throttle counters for public authentication endpoints,
+- explicit task-cache invalidation after task/contact writes and guest cleanup,
+- short TTL as a safety net,
+- local LocMem fallback only while `DJANGO_DEBUG=True`,
+- fail-closed production startup when `REDIS_URL` is missing.
+
+No Celery/background-worker stack is added because JOIN currently has no background workload that justifies it.

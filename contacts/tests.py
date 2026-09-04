@@ -1,14 +1,20 @@
+from datetime import date
+
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
+
+from tasks.models import Task
 
 from .models import Contact
 
 
 class ContactApiTests(APITestCase):
     def setUp(self):
+        cache.clear()
         self.user = get_user_model().objects.create_user(
             username="tester@example.com",
             email="tester@example.com",
@@ -116,3 +122,25 @@ class ContactApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([item["name"] for item in response.data], ["Thomas Müller"])
+
+    def test_contact_update_invalidates_cached_task_representation(self):
+        contact = Contact.objects.create(owner=self.user, name="Thomas Müller")
+        task = Task.objects.create(
+            owner=self.user,
+            title="Assigned Task",
+            due_date=date(2026, 10, 11),
+        )
+        task.assigned_contacts.add(contact)
+
+        cached = self.client.get("/api/tasks/")
+        self.assertEqual(cached.data[0]["users"], [{"name": "Thomas Müller"}])
+
+        updated = self.client.patch(
+            f"/api/contacts/{contact.pk}/",
+            {"name": "Thomas Updated"},
+            format="json",
+        )
+        self.assertEqual(updated.status_code, status.HTTP_200_OK, updated.data)
+
+        refreshed = self.client.get("/api/tasks/")
+        self.assertEqual(refreshed.data[0]["users"], [{"name": "Thomas Updated"}])

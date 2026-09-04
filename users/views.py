@@ -9,11 +9,14 @@ from rest_framework.views import APIView
 
 from .demo_data import create_guest_demo_data
 from .models import User
+from tasks.cache import invalidate_task_list_cache
+
 from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth_register"
 
     @transaction.atomic
     def post(self, request):
@@ -29,6 +32,7 @@ class RegisterView(APIView):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth_login"
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data, context={"request": request})
@@ -40,6 +44,7 @@ class LoginView(APIView):
 
 class GuestLoginView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth_guest"
 
     @transaction.atomic
     def post(self, request):
@@ -65,7 +70,8 @@ class LogoutView(APIView):
         if request.auth:
             request.auth.delete()
         if user.username.startswith("join-guest-"):
-            # Contacts/tasks belong to the guest and are deleted through CASCADE.
+            # Remove the guest's cached task list before CASCADE deletes its data.
+            invalidate_task_list_cache(user.pk)
             user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -12,6 +13,7 @@ from .models import Task
 
 class TaskApiTests(APITestCase):
     def setUp(self):
+        cache.clear()
         self.user = get_user_model().objects.create_user(
             username="tester@example.com",
             email="tester@example.com",
@@ -256,3 +258,80 @@ class TaskApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual([item["title"] for item in response.data], ["Own To Do"])
+
+    def test_unfiltered_task_list_is_cached_and_api_write_invalidates_it(self):
+        Task.objects.create(
+            owner=self.user,
+            title="Cached Task",
+            due_date=date(2026, 10, 11),
+        )
+
+        first = self.client.get("/api/tasks/")
+        self.assertEqual([item["title"] for item in first.data], ["Cached Task"])
+
+        # Direct DB writes intentionally bypass view-level cache invalidation.
+        Task.objects.create(
+            owner=self.user,
+            title="Direct DB Task",
+            due_date=date(2026, 10, 12),
+        )
+        cached = self.client.get("/api/tasks/")
+        self.assertEqual([item["title"] for item in cached.data], ["Cached Task"])
+
+        created = self.client.post(
+            "/api/tasks/",
+            self.valid_payload(title="API Task"),
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+
+        refreshed = self.client.get("/api/tasks/")
+        self.assertEqual(
+            [item["title"] for item in refreshed.data],
+            ["Cached Task", "Direct DB Task", "API Task"],
+        )
+
+    def test_task_list_cache_is_isolated_per_user(self):
+        Task.objects.create(
+            owner=self.user,
+            title="Own Cached Task",
+            due_date=date(2026, 10, 11),
+        )
+        first = self.client.get("/api/tasks/")
+        self.assertEqual([item["title"] for item in first.data], ["Own Cached Task"])
+
+        other = get_user_model().objects.create_user(
+            username="cache-other@example.com",
+            email="cache-other@example.com",
+            name="Other",
+            password="StrongPass-2026!",
+        )
+        Task.objects.create(
+            owner=other,
+            title="Other Cached Task",
+            due_date=date(2026, 10, 12),
+        )
+        other_token = Token.objects.create(user=other)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {other_token.key}")
+
+        second = self.client.get("/api/tasks/")
+        self.assertEqual([item["title"] for item in second.data], ["Other Cached Task"])
+
+    def test_filtered_task_list_bypasses_unfiltered_cache(self):
+        Task.objects.create(
+            owner=self.user,
+            title="Initial To Do",
+            due_date=date(2026, 10, 11),
+            column=Task.Column.TODO,
+        )
+        self.client.get("/api/tasks/")
+
+        Task.objects.create(
+            owner=self.user,
+            title="Fresh Done",
+            due_date=date(2026, 10, 12),
+            column=Task.Column.DONE,
+        )
+        filtered = self.client.get("/api/tasks/?column=done")
+
+        self.assertEqual([item["title"] for item in filtered.data], ["Fresh Done"])

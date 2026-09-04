@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -8,6 +9,9 @@ from tasks.models import Task
 
 
 class AuthApiTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_register_login_and_me(self):
         register = self.client.post(
             "/api/auth/register/",
@@ -53,6 +57,17 @@ class AuthApiTests(APITestCase):
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
         self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(get_user_model().objects.filter(email="max@example.com").count(), 1)
+
+
+    def test_login_is_rate_limited_after_repeated_attempts(self):
+        payload = {"email": "unknown@example.com", "password": "WrongPass-2026!"}
+
+        for _ in range(10):
+            response = self.client.post("/api/auth/login/", payload, format="json")
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        blocked = self.client.post("/api/auth/login/", payload, format="json")
+        self.assertEqual(blocked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
     def test_unknown_email_and_wrong_password_use_same_login_error(self):
         get_user_model().objects.create_user(
