@@ -1,0 +1,87 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DJANGO_DEBUG: "True"
+  DJANGO_SECRET_KEY: django-insecure-ci-only-secret-not-for-production
+  DJANGO_ALLOWED_HOSTS: 127.0.0.1,localhost
+  DJANGO_LOG_LEVEL: INFO
+  DB_NAME: join
+  DB_USER: join
+  DB_PASSWORD: ci-only-database-password
+  DB_CONN_MAX_AGE: "0"
+  JOIN_TASK_CACHE_TIMEOUT: "30"
+  JOIN_LOGIN_RATE: 10/min
+  JOIN_REGISTER_RATE: 5/min
+  JOIN_GUEST_RATE: 5/min
+
+jobs:
+  backend:
+    name: Django / PostgreSQL / Redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build backend image
+        run: docker compose build
+
+      - name: Start PostgreSQL and Redis
+        run: docker compose up -d db redis
+
+      - name: Apply migrations
+        run: docker compose run --rm web python manage.py migrate --noinput
+
+      - name: Check for missing migrations
+        run: docker compose run --rm web python manage.py makemigrations --check --dry-run
+
+      - name: Run Django system checks
+        run: docker compose run --rm web python manage.py check
+
+      - name: Run test suite
+        run: docker compose run --rm web python manage.py test
+
+      - name: Start application container
+        run: docker compose up -d web
+
+      - name: Wait for application health
+        shell: bash
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8000/api/health/ > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "JOIN API did not become healthy in time."
+          exit 1
+
+      - name: Verify readiness dependencies
+        run: curl --fail --show-error http://127.0.0.1:8000/api/readiness/
+
+      - name: Show container status
+        if: always()
+        run: docker compose ps
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Clean up Docker resources
+        if: always()
+        run: docker compose down -v --remove-orphans

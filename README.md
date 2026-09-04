@@ -288,3 +288,50 @@ Phase 5 deliberately stops before the public edge layer. The next steps are:
 4. VPS deployment,
 5. CI/CD and automated migrations/deployment checks,
 6. PostgreSQL backup/restore procedure.
+
+## Phase 6: Continuous Integration
+
+The repository includes `.github/workflows/backend-ci.yml`. GitHub Actions runs the backend checks automatically on every push and pull request.
+
+The workflow deliberately reuses the same Docker Compose topology that is used locally instead of maintaining a separate CI-only database/cache setup. It performs:
+
+1. `docker compose config --quiet`
+2. Docker image build
+3. PostgreSQL and Redis startup
+4. Django migrations
+5. missing-migration check
+6. `python manage.py check`
+7. the complete Django test suite
+8. a real Gunicorn container startup
+9. `/api/health/` and `/api/readiness/` smoke checks
+10. automatic cleanup, with container logs printed if the job fails
+
+CI uses non-production credentials defined only inside the workflow. No local `.env` file and no production secret is committed to the repository.
+
+This is intentionally CI only. Automatic deployment is kept separate until the Linux VPS, reverse proxy and HTTPS configuration exist, so a successful push cannot accidentally deploy to an unfinished production environment.
+
+### Local equivalent
+
+The core CI sequence can still be reproduced locally:
+
+```powershell
+docker compose build
+docker compose up -d db redis
+docker compose run --rm web python manage.py migrate
+docker compose run --rm web python manage.py makemigrations --check --dry-run
+docker compose run --rm web python manage.py check
+docker compose run --rm web python manage.py test
+docker compose up -d
+curl.exe http://127.0.0.1:8000/api/health/
+curl.exe http://127.0.0.1:8000/api/readiness/
+```
+
+## Next production steps after CI
+
+1. provision the Linux VPS,
+2. deploy the Docker stack with production environment values,
+3. put Nginx in front of Gunicorn,
+4. enable HTTPS/TLS for the real domain,
+5. run `python manage.py check --deploy`,
+6. add CD only after the first manual production deployment is proven,
+7. document and test PostgreSQL backup/restore.
