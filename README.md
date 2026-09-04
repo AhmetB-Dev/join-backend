@@ -26,6 +26,8 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 - Subtasks and progress
 - Isolated guest demo workspaces
 - REST API integration with the JOIN frontend
+- Health and database-readiness endpoints
+- Environment-based production configuration
 
 ## Start locally
 
@@ -35,6 +37,8 @@ Create and activate a virtual environment, then install the dependencies:
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+# Recommended when backend/ lives inside the JOIN project root:
+Copy-Item .env.example ..\.env
 python manage.py migrate
 python manage.py runserver
 ```
@@ -44,6 +48,30 @@ The API is then available at:
 ```text
 http://127.0.0.1:8000/api/
 ```
+
+## Environment variables
+
+`.env` is intentionally ignored by Git. The backend first looks for `.env` in the JOIN project root and falls back to `backend/.env` for standalone use. Copy `.env.example` and change values for the current environment.
+
+Important production values:
+
+```text
+DJANGO_DEBUG=False
+DJANGO_SECRET_KEY=<strong random secret>
+DJANGO_ALLOWED_HOSTS=example.com,api.example.com
+DJANGO_CORS_ALLOWED_ORIGINS=https://example.com
+DJANGO_SECURE_SSL_REDIRECT=True
+DJANGO_SESSION_COOKIE_SECURE=True
+DJANGO_CSRF_COOKIE_SECURE=True
+```
+
+When Django is behind a trusted reverse proxy that sets `X-Forwarded-Proto`, enable:
+
+```text
+DJANGO_TRUST_PROXY_SSL_HEADER=True
+```
+
+HSTS remains disabled by default and should only be enabled after HTTPS works reliably in production.
 
 ## Data behavior
 
@@ -58,6 +86,9 @@ The demo identities use `example.com` addresses and placeholder phone numbers. T
 ## API endpoints
 
 ```text
+GET    /api/health/
+GET    /api/readiness/
+
 POST   /api/auth/register/
 POST   /api/auth/login/
 POST   /api/auth/guest/
@@ -79,6 +110,19 @@ PATCH  /api/tasks/<id>/
 DELETE /api/tasks/<id>/
 ```
 
-## Production notes
+## Checks and tests
 
-Before deployment, move `SECRET_KEY` to an environment variable, set `DEBUG = False`, configure `ALLOWED_HOSTS`, use a production database such as PostgreSQL, and restrict CORS to the deployed frontend origin.
+```powershell
+python manage.py check
+python manage.py test
+```
+
+Before production deployment also run:
+
+```powershell
+python manage.py check --deploy
+```
+
+## Production roadmap
+
+The current repository intentionally keeps SQLite for local development. Before the public deployment, the production database, Docker runtime, reverse proxy/HTTPS setup, shared Redis use cases, and CI/CD pipeline will be configured explicitly for the target VPS instead of being guessed in advance.

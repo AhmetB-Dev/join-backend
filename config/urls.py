@@ -3,7 +3,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from contacts.views import ContactViewSet
-from core.views import api_root, health_check
+from core.views import api_root, health_check, readiness_check
 from tasks.views import TaskViewSet
 
 router = DefaultRouter()
@@ -14,6 +14,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", api_root, name="api-root"),
     path("api/health/", health_check, name="health-check"),
+    path("api/readiness/", readiness_check, name="readiness-check"),
     path("api/auth/", include("users.urls")),
     path("api/", include(router.urls)),
 ]

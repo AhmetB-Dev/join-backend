@@ -4,4 +4,9 @@ __pycache__/
 *.sqlite3
 .env
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+staticfiles/
 .DS_Store
