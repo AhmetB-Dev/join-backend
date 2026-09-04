@@ -1,5 +1,7 @@
+from django.core.cache import cache
 from django.db import connection
 from django.db.utils import OperationalError
+from redis.exceptions import RedisError
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -14,20 +16,39 @@ def health_check(request):
     return Response({"status": "ok", "service": "JOIN API"})
 
 
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def readiness_check(request):
-    """Report whether the API can reach its database and accept traffic."""
+def database_is_ready():
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
             cursor.fetchone()
     except OperationalError:
+        return False
+    return True
+
+
+def cache_is_ready():
+    try:
+        cache.set("join:readiness", "ok", timeout=5)
+        return cache.get("join:readiness") == "ok"
+    except RedisError:
+        return False
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def readiness_check(request):
+    """Report whether critical runtime dependencies can accept traffic."""
+    if not database_is_ready():
         return Response(
-            {"status": "unavailable", "database": "unavailable"},
+            {"status": "unavailable", "database": "unavailable", "cache": "unknown"},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-    return Response({"status": "ready", "database": "ok"})
+    if not cache_is_ready():
+        return Response(
+            {"status": "unavailable", "database": "ok", "cache": "unavailable"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return Response({"status": "ready", "database": "ok", "cache": "ok"})
 
 
 @api_view(["GET"])

@@ -10,11 +10,15 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 
 ## Stack
 
-- Python
-- Django
+- Python 3.14
+- Django 6
 - Django REST Framework
-- SQLite for local development
-- Redis-backed shared cache/throttle state in production
+- SQLite for zero-dependency local development
+- PostgreSQL for Docker/production
+- Redis for shared cache and auth-throttle state
+- Gunicorn as the container production application server
+- Separate common vs. production-only dependency files
+- Docker / Docker Compose
 - Django REST Framework token authentication
 
 ## Main backend features
@@ -27,12 +31,13 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 - Subtasks with server-calculated progress
 - Isolated guest demo workspaces
 - REST API integration with the JOIN frontend
-- Health and database-readiness endpoints
+- Health and dependency-readiness endpoints
 - Environment-based production configuration
 - User-scoped task-list caching with explicit invalidation
 - Auth endpoint rate limiting with shared cache state
+- PostgreSQL-backed Docker runtime with persistent database volume
 
-## Start locally
+## Start locally without Docker
 
 Create and activate a virtual environment, then install the dependencies:
 
@@ -40,73 +45,167 @@ Create and activate a virtual environment, then install the dependencies:
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-# Recommended when backend/ lives inside the JOIN project root:
+# Gunicorn/PostgreSQL driver are installed only in Docker/production.
+# For a local PostgreSQL setup, use: pip install -r requirements-production.txt
+# Recommended when the backend lives inside the JOIN project root:
 Copy-Item .env.example ..\.env
 python manage.py migrate
 python manage.py runserver
 ```
 
-The API is then available at:
+With `DB_ENGINE=sqlite` and no `REDIS_URL`, local development uses SQLite and Django's in-process LocMem cache.
+
+The API is available at:
 
 ```text
 http://127.0.0.1:8000/api/
 ```
 
-## Environment variables
+The current JOIN frontend already points to `http://127.0.0.1:8000/api`, so running the backend container on port 8000 does not change the frontend API contract.
 
-`.env` is intentionally ignored by Git. The backend first looks for `.env` in the JOIN project root and falls back to `backend/.env` for standalone use. Copy `.env.example` and change values for the current environment.
+## Docker Compose: Django + PostgreSQL + Redis
 
-Important production values:
+Phase 5 adds a production-like local runtime with three containers:
 
 ```text
-DJANGO_DEBUG=False
-DJANGO_SECRET_KEY=<strong random secret>
-DJANGO_ALLOWED_HOSTS=example.com,api.example.com
-DJANGO_CORS_ALLOWED_ORIGINS=https://example.com
-DJANGO_SECURE_SSL_REDIRECT=True
-DJANGO_SESSION_COOKIE_SECURE=True
-DJANGO_CSRF_COOKIE_SECURE=True
-REDIS_URL=redis://redis:6379/0
+JOIN frontend (host / Live Server)
+        |
+        v
+localhost:8000
+        |
+      web
+   Django + Gunicorn
+     /          \
+    v            v
+PostgreSQL      Redis
+persistent      temporary shared state
 ```
 
-Redis is optional for local development. When `REDIS_URL` is empty, Django uses an in-process LocMem cache so the project and tests remain easy to run. Production deliberately requires Redis because task-cache and auth-throttle state must be shared consistently across application workers.
+PostgreSQL data is stored in the named Docker volume `postgres_data`. Redis is deliberately not persisted because JOIN uses it only for cache and throttle state; the database remains the source of truth.
 
-The current defaults are:
+**Important:** `python manage.py migrate` creates the schema in PostgreSQL but does not copy rows from an existing SQLite `db.sqlite3`. The SQLite file stays untouched. A new Docker PostgreSQL volume therefore starts with an empty application database. If existing local users/tasks/contacts must be preserved, export/import them deliberately instead of assuming schema migrations transfer data between database engines.
+
+### First Docker start
+
+Create an environment file. If your `.env` is in the parent JOIN folder, use it explicitly with `--env-file ../.env` in the commands below. For a standalone backend repository you can instead copy `.env.example` to `.env` next to `compose.yml`.
+
+For local Docker development, set at least:
 
 ```text
+DJANGO_DEBUG=True
+DJANGO_SECRET_KEY=django-insecure-docker-development-only
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+DB_NAME=join
+DB_USER=join
+DB_PASSWORD=join-local-dev-password
+```
+
+Build the image:
+
+```powershell
+docker compose --env-file ../.env build
+```
+
+Apply migrations to PostgreSQL explicitly before starting the web service:
+
+```powershell
+docker compose --env-file ../.env run --rm web python manage.py migrate
+```
+
+Start the stack:
+
+```powershell
+docker compose --env-file ../.env up -d
+```
+
+Check container status:
+
+```powershell
+docker compose --env-file ../.env ps
+```
+
+Check the API:
+
+```text
+http://127.0.0.1:8000/api/health/
+http://127.0.0.1:8000/api/readiness/
+```
+
+The readiness endpoint checks both the database and the configured cache. In Docker this means PostgreSQL and Redis must both be reachable before the web container is considered healthy.
+
+Stop the containers without deleting database data:
+
+```powershell
+docker compose --env-file ../.env down
+```
+
+`docker compose down -v` deletes the PostgreSQL volume and therefore the Docker database. Do not use `-v` when you want to keep your data.
+
+### Docker checks/tests
+
+```powershell
+docker compose --env-file ../.env run --rm web python manage.py check
+docker compose --env-file ../.env run --rm web python manage.py test
+```
+
+Because the web service receives `DB_ENGINE=postgresql` and `REDIS_URL=redis://redis:6379/0` from Compose, these commands verify the application against the real supporting services rather than the SQLite/LocMem development fallbacks.
+
+## Environment variables
+
+`.env` is intentionally ignored by Git. The backend first looks for `.env` in the JOIN project root and falls back to the backend directory for standalone use.
+
+Important values:
+
+```text
+DJANGO_DEBUG=True
+DJANGO_SECRET_KEY=<secret>
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+
+DB_ENGINE=sqlite
+DB_NAME=join
+DB_USER=join
+DB_PASSWORD=<database password>
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_CONN_MAX_AGE=60
+
+REDIS_URL=
 JOIN_TASK_CACHE_TIMEOUT=30
 JOIN_LOGIN_RATE=10/min
 JOIN_REGISTER_RATE=5/min
 JOIN_GUEST_RATE=5/min
 ```
 
-When Django is behind a trusted reverse proxy that sets `X-Forwarded-Proto`, enable:
+Docker Compose deliberately overrides `DB_ENGINE` to `postgresql`, `DB_HOST` to `db`, and `REDIS_URL` to `redis://redis:6379/0` inside the web container.
+
+For production, JOIN fails closed when unsafe configuration is detected. Production requires:
 
 ```text
-DJANGO_TRUST_PROXY_SSL_HEADER=True
+DJANGO_DEBUG=False
+DJANGO_SECRET_KEY=<strong random production secret>
+DJANGO_ALLOWED_HOSTS=<production hostnames>
+DB_ENGINE=postgresql
+DB_PASSWORD=<strong production database password>
+REDIS_URL=<shared Redis URL>
 ```
 
-HSTS remains disabled by default and should only be enabled after HTTPS works reliably in production.
+SQLite is intentionally rejected when `DJANGO_DEBUG=False`, and known placeholder/development secrets are rejected in production.
 
 ## Cache and abuse protection
 
 The unfiltered `GET /api/tasks/` response is cached per authenticated user because JOIN's summary page polls that endpoint frequently. Cache keys include the user ID, filtered task requests bypass this cache, and the cache is invalidated whenever tasks or contacts are created, updated or deleted. Redis is never the source of truth; the database remains authoritative and the cache also has a short TTL as a fallback.
 
-Public auth entrypoints use DRF scoped throttling. Login, registration and guest login have separate limits. The same Django cache backend stores throttle state, so production workers share the same counters through Redis. Rate limiting is only one abuse-control layer and does not replace authentication, validation or permissions.
+Public auth entrypoints use DRF scoped throttling. Login, registration and guest login have separate limits. The same Django cache backend stores throttle state, so Docker/production workers share the same counters through Redis.
 
 ## Data behavior
 
 - Every persisted contact and task must have an owner at database level.
 - Task progress is derived by the backend from completed subtasks; client-supplied progress values are ignored.
-- Existing task progress values are recalculated once by migration so stored data matches the new rule.
 - Blank subtask text is rejected instead of being silently dropped.
 - Registered users start with an empty board and an empty contact list.
 - Every user can only access their own contacts and tasks.
 - Guest login automatically creates an isolated demo workspace with fictional contacts, tasks and subtasks.
 - Guest demo data is deleted together with the temporary guest account when the user logs out.
-- No Firebase export or manual seed command is required.
-
-The demo identities use `example.com` addresses and placeholder phone numbers. They are presentation data, not real people.
 
 ## API endpoints
 
@@ -137,54 +236,55 @@ DELETE /api/tasks/<id>/
 
 ## Checks and tests
 
+Without Docker:
+
 ```powershell
 python manage.py check
 python manage.py test
 ```
 
-Before production deployment also run:
+Before public production deployment also run:
 
 ```powershell
 python manage.py check --deploy
 ```
 
-## Production roadmap
+## Frontend compatibility
 
-The current repository intentionally keeps SQLite for local development. Redis use is now defined for two concrete shared-state needs: the frequently-read task list cache and DRF auth-throttle counters. Before public deployment, the production database, Docker runtime, Redis container/service, reverse proxy/HTTPS setup and CI/CD pipeline will be configured explicitly for the target VPS.
+Phase 5 does not change registration, login, task, contact, or authentication response contracts. The current JOIN frontend can therefore continue using its existing `JoinAPI` integration unchanged.
 
-## Security and data-isolation checks
+The frontend still calculates and sends a `progress` field in task payloads. The backend intentionally ignores that client value and derives progress from subtasks, so the field is redundant but not breaking. It can be removed during a later frontend cleanup.
+
+## Security and data isolation
 
 The API keeps the existing simple e-mail/password login flow. Registration returns a token immediately; no e-mail verification/activation flow is required for this project.
 
-The test suite explicitly verifies that:
+The test suite verifies authentication, owner isolation, validation, token invalidation, cache isolation/invalidation, server-calculated progress and auth throttling. The readiness tests additionally cover database and cache failure behavior.
 
-- unauthenticated users cannot access contacts, tasks, `/me/` or logout,
-- users cannot read, update or delete another user's contacts/tasks by guessing an ID,
-- task/contact list filters remain scoped to the authenticated user,
-- passwords are stored through Django password hashing and are never returned by the API,
-- unknown-account and wrong-password login attempts use the same generic error response,
-- logout deletes the active DRF token,
-- task input rejects invalid columns, priorities, dates and blank subtasks,
-- task progress cannot be manipulated by the client and is recalculated from subtasks,
-- contact assignment never reuses another user's contact with the same name.
+## Dependency split
 
-Auth throttling is implemented with scoped DRF throttles. Local development can use LocMem; production requires `REDIS_URL` so limits remain consistent across workers. Tests also cover the login throttle and user-isolated cache behavior.
+`requirements.txt` contains dependencies needed for normal Windows/local development. `requirements-production.txt` extends it with Gunicorn and the PostgreSQL driver. This keeps the local Windows environment free of a Unix-only application server while the Docker image remains fully reproducible.
 
-## Phase 3 migration safety
+## Phase 5 infrastructure decisions
 
-The owner fields used to be nullable for legacy compatibility. Phase 3 makes them database-required. The migrations deliberately **do not delete or guess ownership for legacy rows**. If an older local database still contains owner-less contacts or tasks, `python manage.py migrate` stops with a clear error. Assign those legacy rows to the correct user first, then run the migration again.
+Phase 5 intentionally introduces only infrastructure with a concrete role:
 
-This fail-closed migration behavior protects existing data from accidental reassignment or deletion.
+- **PostgreSQL:** persistent production-grade relational database.
+- **Redis:** shared task cache and shared DRF throttle counters.
+- **Gunicorn:** production WSGI process instead of Django `runserver` inside the container.
+- **Docker Compose:** reproducible local topology and a direct stepping stone to the Linux VPS deployment.
 
-## Phase 4 Redis/cache design
+PostgreSQL and Redis are not exposed as host ports. Only the Django/Gunicorn web service publishes port `8000`. Database inspection can be performed through `docker compose exec db psql` instead of exposing the database publicly.
 
-Phase 4 intentionally uses Redis for concrete capabilities rather than as a portfolio-only dependency:
+No Celery, Kubernetes, message broker workflow, microservices or other unrelated infrastructure is added because JOIN currently has no workload that requires them.
 
-- shared per-user cache for the repeatedly requested unfiltered task list,
-- shared DRF throttle counters for public authentication endpoints,
-- explicit task-cache invalidation after task/contact writes and guest cleanup,
-- short TTL as a safety net,
-- local LocMem fallback only while `DJANGO_DEBUG=True`,
-- fail-closed production startup when `REDIS_URL` is missing.
+## Next production steps
 
-No Celery/background-worker stack is added because JOIN currently has no background workload that justifies it.
+Phase 5 deliberately stops before the public edge layer. The next steps are:
+
+1. reverse proxy (Nginx),
+2. HTTPS/TLS,
+3. production static-file strategy,
+4. VPS deployment,
+5. CI/CD and automated migrations/deployment checks,
+6. PostgreSQL backup/restore procedure.

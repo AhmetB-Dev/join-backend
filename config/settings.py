@@ -31,9 +31,15 @@ ALLOWED_HOSTS = env_list(
     default=("127.0.0.1", "localhost") if DEBUG else (),
 )
 
+UNSAFE_SECRET_KEYS = {
+    "django-insecure-local-development-only",
+    "django-insecure-docker-development-only",
+    "replace-with-a-long-random-secret",
+}
+
 if not DEBUG:
-    if SECRET_KEY == "django-insecure-local-development-only":
-        raise RuntimeError("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG=False.")
+    if SECRET_KEY in UNSAFE_SECRET_KEYS or SECRET_KEY.startswith("django-insecure-"):
+        raise RuntimeError("DJANGO_SECRET_KEY must contain a strong production secret.")
     if not ALLOWED_HOSTS:
         raise RuntimeError("DJANGO_ALLOWED_HOSTS must be set when DJANGO_DEBUG=False.")
 
@@ -83,14 +89,62 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# SQLite is intentionally kept for local development. The production database
-# will be configured once the VPS/database provider is selected.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# SQLite remains the zero-dependency development default. Docker/production
+# explicitly select PostgreSQL through DB_ENGINE=postgresql.
+DB_ENGINE = os.getenv("DB_ENGINE", "sqlite").strip().lower()
+
+if DB_ENGINE in {"postgres", "postgresql"}:
+    DB_NAME = os.getenv("DB_NAME", "").strip()
+    DB_USER = os.getenv("DB_USER", "").strip()
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+    DB_HOST = os.getenv("DB_HOST", "").strip()
+    DB_PORT = os.getenv("DB_PORT", "5432").strip()
+
+    missing_db_settings = [
+        name
+        for name, value in {
+            "DB_NAME": DB_NAME,
+            "DB_USER": DB_USER,
+            "DB_PASSWORD": DB_PASSWORD,
+            "DB_HOST": DB_HOST,
+            "DB_PORT": DB_PORT,
+        }.items()
+        if not value
+    ]
+    if missing_db_settings:
+        raise RuntimeError(
+            "PostgreSQL configuration is incomplete: " + ", ".join(missing_db_settings)
+        )
+
+    if not DEBUG and DB_PASSWORD in {
+        "join-local-dev-password",
+        "replace-with-a-strong-database-password",
+    }:
+        raise RuntimeError("DB_PASSWORD must be changed before production.")
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": DB_NAME,
+            "USER": DB_USER,
+            "PASSWORD": DB_PASSWORD,
+            "HOST": DB_HOST,
+            "PORT": DB_PORT,
+            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,
+        }
     }
-}
+elif DB_ENGINE == "sqlite":
+    if not DEBUG:
+        raise RuntimeError("Production requires DB_ENGINE=postgresql for JOIN.")
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+else:
+    raise RuntimeError("DB_ENGINE must be either 'sqlite' or 'postgresql'.")
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
