@@ -23,7 +23,7 @@ The frontend of JOIN 360 was developed collaboratively as a team project. I inde
 - Contacts CRUD
 - Tasks CRUD
 - Task assignment to contacts
-- Subtasks and progress
+- Subtasks with server-calculated progress
 - Isolated guest demo workspaces
 - REST API integration with the JOIN frontend
 - Health and database-readiness endpoints
@@ -75,6 +75,10 @@ HSTS remains disabled by default and should only be enabled after HTTPS works re
 
 ## Data behavior
 
+- Every persisted contact and task must have an owner at database level.
+- Task progress is derived by the backend from completed subtasks; client-supplied progress values are ignored.
+- Existing task progress values are recalculated once by migration so stored data matches the new rule.
+- Blank subtask text is rejected instead of being silently dropped.
 - Registered users start with an empty board and an empty contact list.
 - Every user can only access their own contacts and tasks.
 - Guest login automatically creates an isolated demo workspace with fictional contacts, tasks and subtasks.
@@ -126,3 +130,27 @@ python manage.py check --deploy
 ## Production roadmap
 
 The current repository intentionally keeps SQLite for local development. Before the public deployment, the production database, Docker runtime, reverse proxy/HTTPS setup, shared Redis use cases, and CI/CD pipeline will be configured explicitly for the target VPS instead of being guessed in advance.
+
+## Security and data-isolation checks
+
+The API keeps the existing simple e-mail/password login flow. Registration returns a token immediately; no e-mail verification/activation flow is required for this project.
+
+The test suite explicitly verifies that:
+
+- unauthenticated users cannot access contacts, tasks, `/me/` or logout,
+- users cannot read, update or delete another user's contacts/tasks by guessing an ID,
+- task/contact list filters remain scoped to the authenticated user,
+- passwords are stored through Django password hashing and are never returned by the API,
+- unknown-account and wrong-password login attempts use the same generic error response,
+- logout deletes the active DRF token,
+- task input rejects invalid columns, priorities, dates and blank subtasks,
+- task progress cannot be manipulated by the client and is recalculated from subtasks,
+- contact assignment never reuses another user's contact with the same name.
+
+Auth throttling is intentionally not implemented with a process-local production cache. The public deployment will add rate limits together with the planned shared-cache/Redis setup so limits remain consistent across production workers.
+
+## Phase 3 migration safety
+
+The owner fields used to be nullable for legacy compatibility. Phase 3 makes them database-required. The migrations deliberately **do not delete or guess ownership for legacy rows**. If an older local database still contains owner-less contacts or tasks, `python manage.py migrate` stops with a clear error. Assign those legacy rows to the correct user first, then run the migration again.
+
+This fail-closed migration behavior protects existing data from accidental reassignment or deletion.

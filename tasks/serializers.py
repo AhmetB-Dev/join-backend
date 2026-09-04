@@ -17,14 +17,11 @@ class PriorityField(serializers.ChoiceField):
         super().__init__(choices=Task.Priority.choices, **kwargs)
 
     def to_internal_value(self, data):
-        value = str(data or "").strip().lower()
-        if "urgent" in value:
-            data = Task.Priority.URGENT
-        elif "medium" in value:
-            data = Task.Priority.MEDIUM
-        elif "low" in value:
-            data = Task.Priority.LOW
-        return super().to_internal_value(data)
+        value = str(data or "").strip().lower().replace("\\", "/")
+        for priority in Task.Priority.values:
+            if value == priority or value.endswith(f"/{priority}.png"):
+                return super().to_internal_value(priority)
+        return super().to_internal_value(value)
 
     def to_representation(self, value):
         # Keep the current frontend contract so existing image rendering continues to work.
@@ -37,6 +34,12 @@ class SubtaskSerializer(serializers.ModelSerializer):
         fields = ("id", "text", "completed")
         read_only_fields = ("id",)
 
+    def validate_text(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Subtask darf nicht leer sein.")
+        return value
+
 
 class AssignedUserInputSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=150)
@@ -45,6 +48,7 @@ class AssignedUserInputSerializer(serializers.Serializer):
 class TaskSerializer(serializers.ModelSerializer):
     dueDate = DueDateField(source="due_date")
     priority = PriorityField()
+    progress = serializers.IntegerField(read_only=True)
     users = AssignedUserInputSerializer(many=True, write_only=True, required=False)
     subtasks = SubtaskSerializer(many=True, required=False)
 
@@ -97,20 +101,28 @@ class TaskSerializer(serializers.ModelSerializer):
         return contacts
 
     @staticmethod
-    def _replace_subtasks(task, subtasks_data):
+    def _progress_for(subtasks_data):
+        if not subtasks_data:
+            return 0
+        completed = sum(1 for item in subtasks_data if item.get("completed", False))
+        return round((completed / len(subtasks_data)) * 100)
+
+    @classmethod
+    def _replace_subtasks(cls, task, subtasks_data):
         task.subtasks.all().delete()
         Subtask.objects.bulk_create(
             [
                 Subtask(
                     task=task,
-                    text=item["text"].strip(),
+                    text=item["text"],
                     completed=item.get("completed", False),
                     position=index,
                 )
                 for index, item in enumerate(subtasks_data)
-                if item["text"].strip()
             ]
         )
+        task.progress = cls._progress_for(subtasks_data)
+        task.save(update_fields=["progress", "updated_at"])
 
     @transaction.atomic
     def create(self, validated_data):

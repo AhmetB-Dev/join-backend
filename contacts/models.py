@@ -3,14 +3,10 @@ from django.db import models
 
 
 class Contact(models.Model):
-    # Nullable only for backwards compatibility with databases created before
-    # per-user data isolation was introduced. The API never exposes owner-less rows.
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="contacts",
-        null=True,
-        blank=True,
     )
     name = models.CharField(max_length=150, db_index=True)
     email = models.EmailField(blank=True)
