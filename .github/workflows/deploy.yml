@@ -26,27 +26,31 @@ jobs:
     steps:
       - name: Configure SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.JOIN_SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.JOIN_SSH_PRIVATE_KEY_B64 }}
           SSH_HOST: ${{ vars.JOIN_SSH_HOST }}
           SSH_HOST_KEY: ${{ vars.JOIN_SSH_HOST_KEY }}
         run: |
           install -m 700 -d ~/.ssh
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/join_deploy_key
+          printf '%s' "$SSH_PRIVATE_KEY_B64" | base64 --decode > ~/.ssh/join_deploy_key
           chmod 600 ~/.ssh/join_deploy_key
 
           printf '%s %s\n' "$SSH_HOST" "$SSH_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+          ssh-keygen -y -f ~/.ssh/join_deploy_key > /dev/null
+
       - name: Deploy JOIN backend
         env:
           SSH_HOST: ${{ vars.JOIN_SSH_HOST }}
           SSH_USER: ${{ vars.JOIN_SSH_USER }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           ssh \
             -i ~/.ssh/join_deploy_key \
             -o IdentitiesOnly=yes \
-            "$SSH_USER@$SSH_HOST" <<'EOF'
+            "$SSH_USER@$SSH_HOST" \
+            "DEPLOY_SHA='$DEPLOY_SHA' bash -s" <<'EOF'
 
           set -euo pipefail
 
@@ -54,7 +58,7 @@ jobs:
 
           git fetch origin main
           git checkout main
-          git pull --ff-only origin main
+          git reset --hard "$DEPLOY_SHA"
 
           docker compose --env-file ../.env build web
 
