@@ -31,8 +31,9 @@ services:
   web:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile 
     environment:
+      DJANGO_TRUST_PROXY_SSL_HEADER: ${DJANGO_TRUST_PROXY_SSL_HEADER:-False}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-False}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in your environment file}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?Set DJANGO_ALLOWED_HOSTS in your environment file}
@@ -61,7 +62,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readiness/', timeout=3).read()\"",
+          "python -c \"import urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/api/readiness/', headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(r, timeout=3).read()\"",
         ]
       interval: 10s
       timeout: 5s
