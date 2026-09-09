@@ -278,60 +278,56 @@ PostgreSQL and Redis are not exposed as host ports. Only the Django/Gunicorn web
 
 No Celery, Kubernetes, message broker workflow, microservices or other unrelated infrastructure is added because JOIN currently has no workload that requires them.
 
-## Next production steps
+## Production and CI/CD
 
-Phase 5 deliberately stops before the public edge layer. The next steps are:
+JOIN is already designed for Linux/VPS deployment with PostgreSQL, Redis, Gunicorn and Nginx/HTTPS. The repository now uses the shared `AhmetB-Dev/django-devops-template@v1` workflow standard instead of project-specific CI/CD workflows.
 
-1. reverse proxy (Nginx),
-2. HTTPS/TLS,
-3. production static-file strategy,
-4. VPS deployment,
-5. CI/CD and automated migrations/deployment checks,
-6. PostgreSQL backup/restore procedure.
+The project-owned files keep JOIN-specific runtime decisions local:
 
-## Phase 6: Continuous Integration
+- `compose.ci.yaml` — PostgreSQL/Redis Django test stack used by shared CI.
+- `compose.prod.yaml` — immutable GHCR image plus PostgreSQL and Redis for production.
+- `scripts/deploy.sh` — migrations, healthy rollout and application-image rollback.
+- `.env.production.example` — documented production settings without real secrets.
+- `DEPLOYMENT.md` — GitHub/VPS configuration and rollout notes.
 
-The repository includes `.github/workflows/backend-ci.yml`. GitHub Actions runs the backend checks automatically on every push and pull request.
+### Pull requests
 
-The workflow deliberately reuses the same Docker Compose topology that is used locally instead of maintaining a separate CI-only database/cache setup. It performs:
+Pull requests run:
 
-1. `docker compose config --quiet`
-2. Docker image build
-3. PostgreSQL and Redis startup
-4. Django migrations
-5. missing-migration check
-6. `python manage.py check`
-7. the complete Django test suite
-8. a real Gunicorn container startup
-9. `/api/health/` and `/api/readiness/` smoke checks
-10. automatic cleanup, with container logs printed if the job fails
+1. Ruff linting,
+2. `pip-audit` against runtime dependencies,
+3. PostgreSQL and Redis startup,
+4. missing-migration check,
+5. Django system checks,
+6. the complete Django test suite.
 
-CI uses non-production credentials defined only inside the workflow. No local `.env` file and no production secret is committed to the repository.
+Production publish/deploy jobs are skipped for pull requests.
 
-This is intentionally CI only. Automatic deployment is kept separate until the Linux VPS, reverse proxy and HTTPS configuration exist, so a successful push cannot accidentally deploy to an unfinished production environment.
+### Push/merge to `main`
+
+A successful `main` run performs:
+
+1. shared CI,
+2. immutable Docker image build and GHCR publish,
+3. the GitHub `production` environment gate,
+4. SSH deployment to the VPS,
+5. PostgreSQL migrations,
+6. Docker Compose health/readiness checks,
+7. automatic application-image rollback when a new application rollout is unhealthy.
+
+The public API remains `https://join-api.ahmet-balci.de`. The existing server path and Nginx configuration do not need to be changed simply to adopt the shared workflow; configure the existing path as `VPS_APP_DIR`.
 
 ### Local equivalent
 
-The core CI sequence can still be reproduced locally:
+Normal local development can continue with `compose.yml`. The shared CI stack can be reproduced with:
 
 ```powershell
-docker compose build
-docker compose up -d db redis
-docker compose run --rm web python manage.py migrate
-docker compose run --rm web python manage.py makemigrations --check --dry-run
-docker compose run --rm web python manage.py check
-docker compose run --rm web python manage.py test
-docker compose up -d
-curl.exe http://127.0.0.1:8000/api/health/
-curl.exe http://127.0.0.1:8000/api/readiness/
+docker compose -f compose.ci.yaml up --build --abort-on-container-exit --exit-code-from test
+docker compose -f compose.ci.yaml down -v --remove-orphans
 ```
 
-## Next production steps after CI
+See `DEPLOYMENT.md` for the production configuration.
 
-1. provision the Linux VPS,
-2. deploy the Docker stack with production environment values,
-3. put Nginx in front of Gunicorn,
-4. enable HTTPS/TLS for the real domain,
-5. run `python manage.py check --deploy`,
-6. add CD only after the first manual production deployment is proven,
-7. document and test PostgreSQL backup/restore.
+## Remaining operations work
+
+Deployment is intentionally kept simpler than an enterprise platform. Backup/restore drills, SSH/VPS hardening and broader monitoring can be added as a later DevSecOps/operations pass without blocking the portfolio deployment.
