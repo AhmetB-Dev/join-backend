@@ -3,7 +3,6 @@ from datetime import date, timedelta
 from contacts.models import Contact
 from tasks.models import Subtask, Task
 
-
 DEMO_CONTACTS = [
     {"name": "Anna Becker", "email": "anna.becker@example.com", "phone": "+49 000 100001"},
     {"name": "Daniel Weber", "email": "daniel.weber@example.com", "phone": "+49 000 100002"},

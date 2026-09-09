@@ -1,6 +1,5 @@
 from django.core.cache import cache
 
-
 TASK_LIST_CACHE_KEY_VERSION = "v1"
 
 

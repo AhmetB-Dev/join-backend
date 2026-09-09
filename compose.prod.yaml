@@ -1,0 +1,60 @@
+name: join-backend
+
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
+    environment:
+      POSTGRES_DB: ${DB_NAME:-join}
+      POSTGRES_USER: ${DB_USER:-join}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be configured}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8-alpine}
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    restart: unless-stopped
+
+  web:
+    image: ${APP_IMAGE:?APP_IMAGE must point to a published JOIN image}
+    env_file: .env
+    environment:
+      DB_ENGINE: postgresql
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-8001}:8000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/api/readiness/', headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(r, timeout=3).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
