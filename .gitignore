@@ -1,12 +1,29 @@
+# Environment / virtualenv
 .env
+.env.*
+!.env.example
+!.env.production.example
 .venv/
 venv/
+
+# Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Local databases / generated application files
 db.sqlite3
 *.sqlite3
 staticfiles/
 *.log
+
+# Test / lint / tooling caches
 .coverage
 htmlcov/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
