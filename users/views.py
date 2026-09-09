@@ -7,10 +7,10 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .demo_data import create_guest_demo_data
-from .models import User
 from tasks.cache import invalidate_task_list_cache
 
+from .demo_data import create_guest_demo_data
+from .models import User
 from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
 
